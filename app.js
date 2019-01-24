@@ -1,27 +1,16 @@
 const Parser = require('./plugins/manga-parser').Parser;
-let bodyParser = require("body-parser");
 let express = require('express');
+let bodyParser = require("body-parser");
+let $ = require("jquery");
+let hostname = 'localhost';
+let port = 3030;
 let cors = require('cors');
-let admin = require("firebase-admin");
-let serviceAccount = require("./config/serviceAccountKey.json");
 
-
-const config = require('./config/config.json');
-let hostname = config.global.hostname
-let port = config.global.port
-
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-    databaseURL: config.firebase.database_url
-});
-
-let db = admin.database();
-
-let catalog = 'readmangatoday';
 let app = express();
 
 // cross domain issues
 app.use(cors());
+
 app.use(bodyParser.urlencoded({extended: false}));
 app.use(bodyParser.json());
 
@@ -88,15 +77,30 @@ myRouter.route('/pagelist/:mangacatalog/:chapter')
     });
 
 // get manga page
-myRouter.route('/mangapage/:mangacatalog/:pageurl')
-    .get(function (req, res) {
-        Parser.getImageURL(req.params.mangacatalog, req.params.pageurl)
-            .then(imageURL => {
-                res.json({
-                    imageURL
+myRouter.route('/getImageList/:mangacatalog')
+    .post(function (req, res) {
+        let manga = req.body.manga;
+        let catalog = req.params.mangacatalog;
+        let listImages = [];
+        Parser.getPageList(catalog, manga.lastChapter)
+            .then(async pages => {
+                pages.forEach((page) => {
+                    listImages.push(getImageUrl(catalog, page));
                 });
+                let images = await Promise.all(listImages);
+                res.json({images});
             });
     });
+
+function getImageUrl(catalog, page) {
+    return new Promise(resolve => {
+        Parser.getImageURL(catalog, page)
+            .then(imageURL => {
+                console.log(imageURL);
+                resolve(imageURL);
+            });
+    });
+}
 
 // search manga
 myRouter.route('/search/:mangacatalog/:manga')
@@ -120,96 +124,46 @@ myRouter.route('/catalogs')
 
 // get full Manga (return manga + last chapter info)
 myRouter.route('/mangas/:mangacatalog')
-    .post(function (req, res) {
+    .post(async function (req, res) {
         let mangas = req.body.mangas;
         let catalog = req.params.mangacatalog;
-        mangaDetails(mangas, catalog).then((result) => {
-            res.json({result});
-        });
-    });
-
-function mangaDetails(mangas, catalog) {
-    addChapter(mangas, catalog).then((arrayChapters) => {
+        let arrayChapters = await addChapter(mangas, catalog);
         let index = 0;
         for (let manga of mangas) {
-            if (arrayChapters[index] !== undefined) {
-                manga.lastChapter = arrayChapters[index];
-            } else {
-                mangas.splice(index, index);
-            }
+            manga.lastChapter = arrayChapters[index];
             index++;
         }
-        return mangas;
+        res.json({mangas});
     });
-}
 
 // Return last chapter of a manga
 function mangaLastChapter(manga, catalog) {
-    return Promise.resolve(
+    return new Promise(resolve => {
         Parser.getChapterList(catalog, manga).then((chapters) => {
                 let keys = Object.keys(chapters);
                 let last = keys[keys.length - 1];
-                return chapters[last];
+                resolve(chapters[last]);
             },
             error => {
-                console.log(error);
-                return error;
-            })
-    );
+                error(error);
+            }
+        );
+    });
 }
 
 // return the last chapters for all mangas
-function addChapter(mangas, catalog) {
+addChapter = async (mangas, catalog) => {
     let chapters = [];
     for (let manga of mangas) {
         chapters.push(mangaLastChapter(manga, catalog));
     }
     return Promise.all(chapters);
-}
-
-
-// update last cahpter firebase favorite
-function updateChapterFirebase() {
-    let userIds = [];
-    admin.auth().listUsers(100)
-        .then(function (listUsersResult) {
-            listUsersResult.users.forEach(function (userRecord) {
-                userIds.push(userRecord.uid);
-            });
-        })
-        .then(function () {
-                userIds.forEach(function (user_id) {
-                    let ref = db.ref("users/" + user_id + "/mangas/favoris");
-
-                    // Retrieve the favorite mangas
-                    ref.once('value').then(function (snapshot) {
-                        if (!!snapshot.val()) {
-                            let mangas = Object.values(snapshot.val());
-
-                            // get the last chapter
-                            addChapter(mangas, catalog).then((chapters) => {
-                                let listMangas = snapshot.val();
-
-                                // update last chapter in Firebase
-                                Object.keys(listMangas).forEach((key, index) => {
-                                    ref.child(key).update({
-                                        "lastChapter": chapters[index]
-                                    });
-                                });
-                            });
-                        }
-                    });
-                });
-            }
-        );
-}
-
-updateChapterFirebase();
+};
 
 app.use(myRouter);
 
 app.disable('etag');
 
 app.listen(port, hostname, function () {
-    console.log("Server running on ://" + hostname + ":" + port);
+    console.log("Mon serveur fonctionne sur http://" + hostname + ":" + port);
 });
